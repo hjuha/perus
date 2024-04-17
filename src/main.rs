@@ -1,22 +1,7 @@
-use std::io;
-use std::f32;
-use rand;
+use std::{io, f32};
 use rand::Rng;
 
-#[derive(Debug)]
-struct Matrix {
-    data: Vec<Vec<f32>>,
-}
-
-impl Matrix {
-    fn get(&self, i: usize, j: usize) -> f32 {
-        self.data[i][j]
-    }
-
-    pub fn get_row(&self, i: usize, offset: usize) -> &[f32] {
-        &self.data[i].as_slice()[offset..]
-    }
-}
+type Matrix = Vec<Vec<f32>>;
 
 #[derive(Debug)]
 struct Instance {
@@ -27,8 +12,8 @@ struct Instance {
     matrix: Matrix,
 }
 
-fn close(x: f32, y: f32) -> bool {
-    (x - y).abs() < 0.00000001
+fn is_zero(x: f32) -> bool {
+    x.abs() < 0.00000001
 }
 
 fn log_sum_exp(x: f32, y: f32) -> f32 {
@@ -66,19 +51,17 @@ fn read_input() -> Instance {
     let delta: f32 = args[2].parse().unwrap();
     let time_limit: f32 = args[3].parse().unwrap();
 
-    let mut matrix: Vec<Vec<f32>> = Vec::new();
+    let mut matrix: Matrix = Vec::with_capacity(n);
     for _ in 0..n {
         let mut line = String::new();
         io::stdin().read_line(&mut line).expect("Failed to read line.");
-        let split = line.split_whitespace();
-        let line: Vec<f32> = split.map(|x| x.parse().unwrap()).collect();
+        let line: Vec<f32> = line.split_whitespace().map(|x| x.parse().unwrap()).collect();
         if line.len() != n {
             panic_input_format();
         }
         matrix.push(line);
     }
-    let matrix = Matrix { data: matrix };
-    Instance { n: n, epsilon: epsilon, delta: delta, time_limit: time_limit, matrix: matrix }
+    Instance { n, epsilon, delta, time_limit, matrix }
 }
 
 fn preprocess(instance: &Instance) -> Matrix {
@@ -88,45 +71,48 @@ fn preprocess(instance: &Instance) -> Matrix {
         row_bound.push(previous + 1. + 0.5 / previous + 0.6 / previous / previous);
     }
     let row_bound: Vec<f32> = row_bound.iter().map(|x| x / f32::consts::E).collect();
-    let mut weights: Vec<Vec<f32>> = Vec::new();
+    let mut weights: Matrix = Vec::with_capacity(instance.n);
     for i in 0..instance.n {
-        let mut weight_row: Vec<f32> = Vec::new();
+        let mut weight_row: Vec<f32> = Vec::with_capacity(instance.n);
         for j in 0..instance.n {
-            let mut line = Vec::from(instance.matrix.get_row(i,j));
+            let mut line = instance.matrix[i][j..].to_vec();
             line.sort_by(|x, y| y.partial_cmp(x).unwrap());
-            let divisor = (j + 1..=instance.n).into_iter().map(|k| line[k - j - 1] * (row_bound[k] - row_bound[k - 1])).sum::<f32>();
+            let divisor = (j + 1..=instance.n).map(|k| line[k - j - 1] * (row_bound[k] - row_bound[k - 1])).sum::<f32>();
             
-            let weight = if close(instance.matrix.get(i, j), 0.0) {
+            let weight = if is_zero(instance.matrix[i][j]) {
                 0.0
-            } else if close(divisor, 0.0) {
-                10000000.0
+            } else if is_zero(divisor) {
+                f32::INFINITY
             } else {
-                instance.matrix.get(i, j) / divisor
+                instance.matrix[i][j] / divisor
             };
             weight_row.push(weight);
         }
         weights.push(weight_row);
     }
-    Matrix { data: weights }
+    weights
 }
 
 fn draw_sample(instance: &Instance, weights: &Matrix) -> f32 {
     let mut importance_weight: f32 = 0.0;
-    let mut not_used: Vec<f32> = (0..instance.n).into_iter().map(|_| 1.0).collect();
+    let mut not_used = vec![1.0; instance.n];
     let mut rng = rand::thread_rng();
     for j in 0..instance.n {
-        let norm: f32 = (0..instance.n).into_iter().map(|i| weights.get(i, j) * not_used[i]).sum();
-        if close(norm, 0.0) {
-            return -f32::INFINITY;
+        let norm: f32 = (0..instance.n).map(|i| weights[i][j] * not_used[i]).sum();
+        if is_zero(norm) {
+            return f32::NEG_INFINITY;
         }
         let choice: f32 = rng.gen::<f32>() * norm;
         let mut cumulative: f32 = 0.0;
-        for i in 0..instance.n {
-            cumulative += weights.get(i, j) * not_used[i];
-            if choice <= cumulative {
-                not_used[i] = 0.0;
-                importance_weight += instance.matrix.get(i, j).ln() - (weights.get(i, j) / norm).ln();
-                break;
+        if let Some(i) = (0..instance.n).find(|&i| {
+            cumulative += weights[i][j] * not_used[i];
+            choice <= cumulative
+        }) {
+            not_used[i] = 0.0;
+            if norm.is_finite() {
+                importance_weight += instance.matrix[i][j].ln() - (weights[i][j] / norm).ln();
+            } else {
+                importance_weight += instance.matrix[i][j].ln();
             }
         }
     }
@@ -138,12 +124,12 @@ fn main() {
     let weights = preprocess(&instance);
 
     let mut count: f32 = 0.0;
-    let mut cumulative: f32 = -f32::INFINITY;
-    for _ in 0..10000 {
+    let mut cumulative: f32 = f32::NEG_INFINITY;
+    for _ in 0..1000 {
         count += 1.0;
         let sample = draw_sample(&instance, &weights);
         cumulative = log_sum_exp(cumulative, sample);
     }
 
-    println!("{}", cumulative.exp() / count);
+    println!("{}", cumulative - count.ln());
 }
