@@ -2,7 +2,7 @@ use std::{io, f32};
 use rand::Rng;
 use rand_distr::{Poisson, Distribution};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::process;
 
 type Matrix = Vec<Vec<f32>>;
@@ -103,9 +103,9 @@ fn psi(s: f32) -> f32 {
 }
 
 fn ltsa(n: u64, cc: f32, mu0: f32, epsilon: f32, epsilon0: f32, instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
-	let mut mu: f32 = 0.0;
 	let mu0t: f32 = mu0 / (1.0 - epsilon0 * epsilon0);
-	let alpha: f32 = epsilon / (cc * mu0t);
+	let mut mu: f32 = mu0t;
+    let alpha: f32 = epsilon / (cc * mu0t);
 	for _ in 0..n {
         let sample = draw_sample(instance, weights, helper);
 		let x: f32 = if sample.is_finite() {
@@ -113,16 +113,15 @@ fn ltsa(n: u64, cc: f32, mu0: f32, epsilon: f32, epsilon0: f32, instance: &Insta
         } else {
             0.0
         };
-		let w: f32 = mu0t + 1.0 / alpha * psi(alpha * (x - mu0t));
-        assert!(x.is_finite());
-		assert!(w.is_finite());
+		let w: f32 = psi(alpha * (x - mu0t)) / alpha;
 		mu += w / (n as f32);
 	}
 	mu
 }
 
 fn estimate(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
-	let k: u64 = ((2.0 * instance.epsilon.powf(-2./3.) * (6. / instance.delta).ln()).ceil() + 0.1) as u64;
+    let epow = instance.epsilon.powf(1. / 3.);
+	let k: u64 = ((2.0 / epow / epow * (6. / instance.delta).ln()).ceil() + 0.1) as u64;
 	println!("GBAS... {}", k);
 	let mu0: f32 = gbas(k, instance, weights, helper);
 	println!("Bad estimate: {}", (mu0.ln() + helper.upper_bound + instance.coef));
@@ -136,22 +135,15 @@ fn estimate(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
 		a += var_bernoulli(instance, weights, helper);
 	}
 	let c1: f32 = 2.0 * (3.0 / instance.delta).ln();
-	let cc: f32 = (a / c1 + 0.5 + (a / c1 + 0.25).sqrt()) * (1. + instance.epsilon.powf(1./3.)) * (1. + instance.epsilon.powf(1./3.)) * instance.epsilon / mu0;
-	let n: u64 = (0.1 + (2. / instance.epsilon / instance.epsilon * (6. / instance.delta).ln() * cc / (1. - instance.epsilon.powf(1./3.))).ceil()) as u64;
+	let cc: f32 = (a / c1 + 0.5 + (a / c1 + 0.25).sqrt()) * (1. + epow) * (1. + epow) * instance.epsilon / mu0;
+	let n: u64 = (0.1 + (2. / instance.epsilon / instance.epsilon * (6. / instance.delta).ln() * cc / (1. - epow)).ceil()) as u64;
 
 	println!("LTSA... {}", n);
-	ltsa(n, cc, mu0, instance.epsilon, instance.epsilon.powf(1.0 / 3.0), instance, weights, helper)
+	ltsa(n, cc, mu0, instance.epsilon, epow, instance, weights, helper)
 }
 
 fn panic_input_format() {
-    let msg = "Give the input in the following format:
-
-    n epsilon delta time_limit
-    a_11 a_12 ... a_1n
-    a_21 a_22 ... a_2n
-    ...
-    a_n1 a_n2 ... a_nn
-    ";
+    let msg = "Give the input in the following format:\n\nn epsilon delta time_limit\na_11 a_12 ... a_1n\na_21 a_22 ... a_2n\n...\na_n1 a_n2 ... a_nn\n";
     panic!("{}", msg);
 }
 
@@ -208,14 +200,14 @@ fn preprocess(instance: &Instance) -> (Matrix, Helper) {
     for i in 0..instance.n {
         let mut weight_row: Vec<f32> = Vec::with_capacity(instance.n);
         for j in 0..instance.n {
-            let mut line = instance.matrix[i][j..].to_vec();
+            let mut line = instance.matrix[i][j + 1..].to_vec();
             line.sort_by(|x, y| y.partial_cmp(x).unwrap());
-            let divisor = (j + 1..=instance.n).map(|k| line[k - j - 1] * (row_bound[k] - row_bound[k - 1])).sum::<f32>();
+            let divisor = (1..instance.n - j).map(|k| line[k - 1] * (row_bound[k] - row_bound[k - 1])).sum::<f32>();
             
             let weight = if is_zero(instance.matrix[i][j]) {
                 0.0
             } else if is_zero(divisor) {
-                f32::INFINITY
+                1000000.0 // f32::INFINITY
             } else {
                 instance.matrix[i][j] / divisor
             };
@@ -236,28 +228,25 @@ fn preprocess(instance: &Instance) -> (Matrix, Helper) {
     let mut deep_bound: Matrix = Vec::with_capacity(instance.n);
     for i in 0..instance.n {
         deep_bound.push(Vec::with_capacity(1<<depth));
-        match i {
-            0 => {
-                for _ in 0..(1<<depth) {
-                    deep_bound[i].push(f32::NEG_INFINITY);
-                }
-                deep_bound[i][0] = row_bounds[0];
+        if i == 0 {
+            for _ in 0..(1<<depth) {
+                deep_bound[i].push(f32::NEG_INFINITY);
+            }
+            deep_bound[i][0] = row_bounds[0];
+            for j in 0..depth {
+                deep_bound[i][1<<j] = instance.matrix[i][j].ln();
+            }
+        } else {
+            for mask in 0..(1<<depth) {
+                let prev = deep_bound[i - 1][mask];
+                deep_bound[i].push(prev + row_bounds[i]);
+            }
+            for mask in 1..(1<<depth) {
                 for j in 0..depth {
-                    deep_bound[i][1<<j] = instance.matrix[i][j].ln();
-                }
-            },
-            _ => {
-                for mask in 0..(1<<depth) {
-                    let prev = deep_bound[i - 1][mask];
-                    deep_bound[i].push(prev + row_bounds[i]);
-                }
-                for mask in 1..(1<<depth) {
-                    for j in 0..depth {
-                        if (mask & (1<<j)) > 0 {
-                            let prev = deep_bound[i - 1][mask ^ (1<<j)] + instance.matrix[i][j].ln();
-                            let cur = deep_bound[i][mask];
-                            deep_bound[i][mask] = log_sum_exp(prev, cur);
-                        }
+                    if (mask & (1<<j)) > 0 {
+                        let prev = deep_bound[i - 1][mask ^ (1<<j)] + instance.matrix[i][j].ln();
+                        let cur = deep_bound[i][mask];
+                        deep_bound[i][mask] = log_sum_exp(prev, cur);
                     }
                 }
             }
@@ -275,14 +264,13 @@ fn draw_sample(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
 	// Exact sampling part O(n * depth)
 	let depth = helper.depth;
     let mut subset = (1<<depth) - 1;
-	for i in (0..instance.n).rev() {
+    for i in (0..instance.n).rev() {
 		if subset == 0 {
 			importance_weight -= helper.row_bounds[i];
 		} else {
 			if i > 0 {
-                let foo = rng.gen::<f32>();
-				let lhs = helper.deep_bound[i - 1][subset] + helper.row_bounds[i];
-                if lhs.is_infinite() || foo >= (lhs - helper.deep_bound[i][subset]).exp() {
+				let skip_weight = helper.deep_bound[i - 1][subset] + helper.row_bounds[i];
+                if skip_weight.is_infinite() || rng.gen::<f32>() >= (skip_weight - helper.deep_bound[i][subset]).exp() {
 					not_used[i] = 0.0;
 					let mut max_j: usize = instance.n + 1;
 					let mut max_weight: f32 = f32::NEG_INFINITY;
@@ -295,7 +283,7 @@ fn draw_sample(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
 							}
 						}
 					}
-					if max_j == instance.n + 1 {
+    				if max_j == instance.n + 1 {
                         return f32::NEG_INFINITY;
                     }
 					subset ^= 1<<max_j;
@@ -315,7 +303,7 @@ fn draw_sample(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
 	if instance.n == depth {
         return 0.0;
     }
-
+	
     for j in depth..instance.n {
         let norm: f32 = (0..instance.n).map(|i| weights[i][j] * not_used[i]).sum();
         if is_zero(norm) {
@@ -323,15 +311,16 @@ fn draw_sample(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
         }
         let choice: f32 = rng.gen::<f32>() * norm;
         let mut cumulative: f32 = 0.0;
-        if let Some(i) = (0..instance.n).find(|&i| {
+        for i in 0..instance.n {
             cumulative += weights[i][j] * not_used[i];
-            choice <= cumulative
-        }) {
-            not_used[i] = 0.0;
-            if norm.is_finite() {
-                importance_weight += instance.matrix[i][j].ln() - (weights[i][j] / norm).ln();
-            } else {
-                importance_weight += instance.matrix[i][j].ln();
+            if choice < cumulative || i + 1 == instance.n {
+                not_used[i] = 0.0;
+                if norm.is_finite() {
+                    importance_weight += instance.matrix[i][j].ln() - (weights[i][j] / norm).ln();
+                } else {
+                    importance_weight += instance.matrix[i][j].ln();
+                }
+                break;
             }
         }
     }
@@ -340,7 +329,6 @@ fn draw_sample(instance: &Instance, weights: &Matrix, helper: &Helper) -> f32 {
 
 fn main() {
     let instance = read_input();
-    let (weights, helper) = preprocess(&instance);
 
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(instance.time_limit));
@@ -348,5 +336,19 @@ fn main() {
         process::exit(0);
     });
 
-    println!("{}", helper.upper_bound + estimate(&instance, &weights, &helper).ln() + instance.coef);
+    let start = Instant::now();
+
+    let (weights, helper) = preprocess(&instance);
+
+    let preprocessing_time = start.elapsed().as_millis() as f32 / 1000.0;
+    
+    let constants = helper.upper_bound + instance.coef;
+    let est = estimate(&instance, &weights, &helper).ln();
+
+    let sampling_time = start.elapsed().as_millis() as f32 / 1000.0 - preprocessing_time;
+
+    println!("Estimate: {}", constants + est);
+    println!("Preprocessing time: {}", preprocessing_time);
+    println!("Sampling time: {}", sampling_time);
+    println!("Running time: {}", preprocessing_time + sampling_time);
 }
