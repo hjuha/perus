@@ -1,5 +1,7 @@
 # Estimator for the Permanent of a Matrix
 
+Practice project for learning Rust by rewriting the nesting importance sampler from [https://github.com/Sums-of-Products/nesting-importance-sampling](https://github.com/Sums-of-Products/nesting-importance-sampling).
+
 ## Input
 
 The program reads input from standard input stream in the following format:
