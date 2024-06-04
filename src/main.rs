@@ -347,8 +347,8 @@ fn main() {
 
     let sampling_time = start.elapsed().as_millis() as f32 / 1000.0 - preprocessing_time;
 
-    println!("Estimate: {}", constants + est);
+    println!("Estimate (ln):      {}", constants + est);
     println!("Preprocessing time: {}", preprocessing_time);
-    println!("Sampling time: {}", sampling_time);
-    println!("Running time: {}", preprocessing_time + sampling_time);
+    println!("Sampling time:      {}", sampling_time);
+    println!("Running time:       {}", preprocessing_time + sampling_time);
 }
